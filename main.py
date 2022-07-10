@@ -28,7 +28,7 @@ class DB:
     cur = con.cursor()
 
     def update():
-        DB.cur.execute('CREATE TABLE IF NOT EXISTS people (firstname TEXT NOT NULL DEFAULT "", lastname TEXT NOT NULL DEFAULT "", sex TEXT, birthdate DATE, birthplace TEXT, deathdate DATE, deathplace TEXT, permalink TEXT PRIMARY KEY, family_id INT, CONSTRAINT `unique_permalink` UNIQUE(permalink) ON CONFLICT REPLACE)')
+        DB.cur.execute('CREATE TABLE IF NOT EXISTS people (firstname TEXT NOT NULL DEFAULT "", lastname TEXT NOT NULL DEFAULT "", sex TEXT, birthdate DATE, birthplace TEXT, deathdate DATE, deathplace TEXT, note TEXT, permalink TEXT PRIMARY KEY, family_id INT, timecode TEXT, CONSTRAINT `unique_permalink` UNIQUE(permalink) ON CONFLICT REPLACE)')
         DB.cur.execute('CREATE TABLE IF NOT EXISTS family (id TEXT PRIMARY KEY, father_permalink TEXT, mother_permalink TEXT, wedding_date DATE, wedding_place TEXT, CONSTRAINT `unique_id` UNIQUE(id) ON CONFLICT REPLACE)')
         DB.con.commit()
 
@@ -62,7 +62,9 @@ class People:
                  birthplace='',
                  deathdate='',
                  deathplace='',
-                 family_id=''):
+                 family_id='',
+                 timecode_id='',
+                 note=''):
         self.permalink = permalink
         self.firstname = firstname
         self.lastname = lastname
@@ -73,13 +75,15 @@ class People:
         self.deathplace = deathplace
         self.permalink = permalink
         self.family_id = family_id
+        self.timecode = timecode_id
+        self.note = note
 
     def __str__(self):
-        return ' '.join(map(str, (self.sex, self.firstname, self.lastname, self.permalink, self.birthdate, self.deathdate, self.birthplace, self.deathplace)))
+        return ' '.join(map(str, (self.sex, self.firstname, self.lastname, self.permalink, self.birthdate, self.birthplace, self.deathdate, self.deathplace, self.note)))
 
     def save(self, DB):
-        DB.cur.execute('INSERT INTO people (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                       (self.firstname, self.lastname, self.sex, self.birthdate, self.birthplace, self.deathdate, self.deathplace, self.permalink))
+        DB.cur.execute('INSERT INTO people (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, timecode, note, permalink) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                       (self.firstname, self.lastname, self.sex, self.birthdate, self.birthplace, self.deathdate, self.deathplace, self.timecode, self.note, self.permalink))
 
 
 class Process:
@@ -94,10 +98,11 @@ class Process:
             with open(self.filename, 'r', encoding='utf-8') as f:
                 cache = json.load(f)
                 DB.cur.execute(
-                    'SELECT firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id FROM people')
-                for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id) in DB.cur.fetchall():
+                    'SELECT firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode, note FROM people')
+                for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode, note) in DB.cur.fetchall():
                     people = People(permalink, firstname, lastname, sex,
-                                    birthdate, birthplace, deathdate, deathplace, family_id)
+                                    birthdate, birthplace, deathdate,
+                                    deathplace, family_id, timecode, note)
                     for (k, v) in cache.items():
                         if v == people.permalink:
                             self.cache[k] = people
@@ -106,7 +111,7 @@ class Process:
     def save_caches(self):
         with open(self.filename, 'w') as f:
             for (k, v) in self.cache.items():
-                if isinstance(v,str):
+                if isinstance(v, str):
                     self.cache[k] = v
                 else:
                     self.cache[k] = v.permalink
@@ -130,6 +135,7 @@ class Process:
     def browse(self, path):
         response = requests.get(Process.base + path)
         parts = response.text.split('<h3')
+        # Parsing Person
         soup = BeautifulSoup(parts[0], "html.parser")
         permalink_ = soup.select('h1 input')[0]['value'].strip() if len(
             soup.select('h1 input')) > 0 else ''
@@ -137,11 +143,11 @@ class Process:
         permalink = ('p=%s;n=%s;' % (parts[0], parts[1]) + ('oc=%s' % (
             parts[2],) if parts[2] != '0' else '')) if len(parts) > 2 else ''
         people = People(permalink)
-        people.sex = soup.select('h1 img')[0]['alt'].strip() if len(
+        people.sex = [i['alt'].strip() for i in soup.select('h1 img[alt]') if i['alt'].strip() in ['H', 'F']][0] if len(
             soup.select('h1 img')) > 0 else ''
-        people.firstname = soup.select('h1 a')[0].text.strip() if len(
+        people.firstname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=P')][0].text.strip() if len(
             soup.select('h1 a')) > 0 else ''
-        people.lastname = soup.select('h1 a')[1].text.strip() if len(
+        people.lastname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=N')][0].text.strip() if len(
             soup.select('h1 a')) > 1 else ''
         dict1 = Process.extractParams(soup.select('ul li a.date')[
                                       0]['href'].strip()) if len(soup.select('ul li a.date')) > 0 else {}
@@ -153,11 +159,20 @@ class Process:
             1] if len(soup.select('ul li script')) > 0 else ''
         people.deathplace = soup.select('ul li script')[1].text.strip().split('"')[
             1] if len(soup.select('ul li script')) > 1 else ''
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        note = [i.string for i in soup.select('body ul li') if not i.has_attr("date") and i.string]
+        note.extend([i.text.strip() for i in soup.select('body dl dd')])
+        people.note = '\r\n'.join(note)
+
+        _, *temptimecode = soup.select('tr > td > span')[-1].text.strip().rsplit(' ', 5)
+        people.timecode = ' '.join(temptimecode)
         print(people)
         people.save(DB)
         self.cache[path] = people
         DB.con.commit()
-        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Parsing Parents
         parents = soup.find('h3', text='Parents')
         if parents:
             ul = parents.findNext('ul')
@@ -181,6 +196,7 @@ class Process:
                     'UPDATE people SET family_id = ? WHERE permalink = ?', (family.id, people.permalink))
         spouses = soup.find('h3', text='Spouses and children') or soup.find(
             'h3', text='Mariages et enfants')
+        # Parsing Spouses and childrens
         if spouses:
             ul = spouses.findNext('ul')
             links = ul.findAll('b')
@@ -204,22 +220,25 @@ class Process:
 
     def export(self, filename):
         with open(filename, 'w', encoding='utf-8') as f:
+            # Write people
             DB.cur.execute(
-                'SELECT firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id FROM people')
+                'SELECT firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode FROM people')
             f.write(
-                'person,grampsid,firstname,lastname,gender,note,birthdate,birthplace,deathdate,deathplace\n')
+                'person,grampsid,firstname,lastname,gender,note,birthdate,birthplace,deathdate,deathplace, timecode\n')
             people = DB.cur.fetchall()
-            for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id) in people:
+            for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode) in people:
                 sex = 'male' if sex == 'M' else 'female' if sex == 'F' else ''
                 source = Process.base + permalink
-                f.write('%s,,"%s","%s",%s,%s,%s,"%s",%s,"%s"\n' % (
-                    permalink, firstname, lastname, sex, source, birthdate, birthplace, deathdate, deathplace))
+                f.write('%s,,"%s","%s",%s,%s,%s,"%s",%s,"%s", "%s"\n' % (
+                    permalink, firstname, lastname, sex, source, birthdate, birthplace, deathdate, deathplace, ' '.join(timecode)))
+            # Write marriage
             f.write('\n\nmarriage,husband,wife,date,place,source\n')
             DB.cur.execute(
                 'SELECT id, father_permalink, mother_permalink, wedding_date, wedding_place FROM family')
             for (family_id, father_permalink, mother_permalink, wedding_date, wedding_place) in DB.cur.fetchall():
                 f.write('%s,%s,%s,%s,"%s"\n' % (family_id, father_permalink,
                         mother_permalink, wedding_date or '', wedding_place or ''))
+            # Write family
             f.write('\n\nfamily,child\n')
             for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id) in people:
                 f.write('%s,%s\n' % (family_id or '', permalink))
