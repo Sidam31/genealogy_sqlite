@@ -135,87 +135,93 @@ class Process:
     def browse(self, path):
         response = requests.get(Process.base + path)
         parts = response.text.split('<h3')
+
         # Parsing Person
         soup = BeautifulSoup(parts[0], "html.parser")
         permalink_ = soup.select('h1 input')[0]['value'].strip() if len(
             soup.select('h1 input')) > 0 else ''
         parts = permalink_.replace('[', '').replace(']', '').split('/')
-        permalink = ('p=%s;n=%s;' % (parts[0], parts[1]) + ('oc=%s' % (
-            parts[2],) if parts[2] != '0' else '')) if len(parts) > 2 else ''
-        people = People(permalink)
-        people.sex = [i['alt'].strip() for i in soup.select('h1 img[alt]') if i['alt'].strip() in ['H', 'F']][0] if len(
-            soup.select('h1 img')) > 0 else ''
-        people.firstname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=P')][0].text.strip() if len(
-            soup.select('h1 a')) > 0 else ''
-        people.lastname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=N')][0].text.strip() if len(
-            soup.select('h1 a')) > 1 else ''
-        dict1 = Process.extractParams(soup.select('ul li a.date')[
-                                      0]['href'].strip()) if len(soup.select('ul li a.date')) > 0 else {}
-        people.birthdate = Process.dictToDate(dict1)
-        dict2 = Process.extractParams(soup.select('ul li a.date')[
-                                      1]['href'].strip()) if len(soup.select('ul li a.date')) > 1 else {}
-        people.deathdate = Process.dictToDate(dict2)
-        people.birthplace = soup.select('ul li script')[0].text.strip().split('"')[
-            1] if len(soup.select('ul li script')) > 0 else ''
-        people.deathplace = soup.select('ul li script')[1].text.strip().split('"')[
-            1] if len(soup.select('ul li script')) > 1 else ''
+        if not parts[-1] == 'x x':
+            permalink = ('p=%s;n=%s;' % (parts[0], parts[1]) + ('oc=%s' % (
+                parts[2],) if parts[2] != '0' else '')) if len(parts) > 2 else ''
+            people = People(permalink)
+            people.sex = [i['alt'].strip() for i in soup.select('h1 img[alt]') if i['alt'].strip() in ['H', 'F']][0] if len(
+                soup.select('h1 img')) > 0 else ''
+            people.firstname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=P')][0].text.strip() if len(
+                soup.select('h1 a')) > 0 else ''
+            people.lastname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=N')][0].text.strip() if len(
+                soup.select('h1 a')) > 1 else ''
+            dict1 = Process.extractParams(soup.select('ul li a.date')[
+                                        0]['href'].strip()) if len(soup.select('ul li a.date')) > 0 else {}
+            people.birthdate = Process.dictToDate(dict1)
+            dict2 = Process.extractParams(soup.select('ul li a.date')[
+                                        1]['href'].strip()) if len(soup.select('ul li a.date')) > 1 else {}
+            people.deathdate = Process.dictToDate(dict2)
+            people.birthplace = soup.select('ul li script')[0].text.strip().split('"')[
+                1] if len(soup.select('ul li script')) > 0 else ''
+            people.deathplace = soup.select('ul li script')[1].text.strip().split('"')[
+                1] if len(soup.select('ul li script')) > 1 else ''
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        note = [i.string for i in soup.select('body ul li') if not i.has_attr("date") and i.string]
-        note.extend([i.text.strip() for i in soup.select('body dl dd')])
-        people.note = '\r\n'.join(note)
+            soup = BeautifulSoup(response.text, "html.parser")
+            note = [i.string for i in soup.select('body ul li') if not i.has_attr("date") and i.string]
+            note.extend([i.text.strip() for i in soup.select('body dl dd')])
+            people.note = '\r\n'.join(note)
 
-        _, *temptimecode = soup.select('tr > td > span')[-1].text.strip().rsplit(' ', 5)
-        people.timecode = ' '.join(temptimecode)
-        print(people)
-        people.save(DB)
-        self.cache[path] = people
-        DB.con.commit()
+            _, *temptimecode = soup.select('tr > td > span')[-1].text.strip().rsplit(' ', 5)
+            people.timecode = ' '.join(temptimecode)
+            print(people)
+            people.save(DB)
+            self.cache[path] = people
+            DB.con.commit()
 
-        # Parsing Parents
-        parents = soup.find('h3', text='Parents')
-        if parents:
-            ul = parents.findNext('ul')
-            links = ul.findAll('li')
-            father_ = Process.extractQuery(links[0].find(
-                'a')['href'].strip()) if len(links) > 0 else ''
-            if father_:
-                father = self.cache[father_] if father_ in self.cache.keys(
-                ) else self.browse(father_)
-            father_permalink = father.permalink if father else ''
-            mother_ = Process.extractQuery(links[1].find(
-                'a')['href'].strip()) if len(links) > 1 else ''
-            if mother_:
-                mother = self.cache[mother_] if mother_ in self.cache.keys(
-                ) else self.browse(mother_)
-            mother_permalink = mother.permalink if mother else ''
-            if father_permalink or mother_permalink:
-                family = Family.get(father_permalink, mother_permalink)
-                family.save()
-                DB.cur.execute(
-                    'UPDATE people SET family_id = ? WHERE permalink = ?', (family.id, people.permalink))
-        spouses = soup.find('h3', text='Spouses and children') or soup.find(
-            'h3', text='Mariages et enfants')
-        # Parsing Spouses and childrens
-        if spouses:
-            ul = spouses.findNext('ul')
-            links = ul.findAll('b')
-            spouse_ = Process.extractQuery(links[0].find(
-                'a')['href'].strip()) if len(links) > 0 else ''
-            if spouse_ and spouse_ not in self.cache.keys():
-                spouse = self.browse(spouse_)
-                dict1 = Process.extractParams(ul.select('li a.date')[0]['href'].strip()) if len(
-                    ul.select('li a.date')) > 0 else {}
-                wedding_date = Process.dictToDate(dict1)
-                wedding_place = ul.select('li script')[0].text.strip().split('"')[
-                    1] if len(ul.select('li script')) > 0 else ''
-                father_permalink = people.permalink if people.sex == 'M' else spouse.permalink
-                mother_permalink = spouse.permalink if people.sex == 'M' else people.permalink
-                family = Family.get(father_permalink, mother_permalink)
-                family.wedding_date = wedding_date
-                family.wedding_place = wedding_place
-                family.save()
-                print('W %s %s %s' % (wedding_date, wedding_place, family.id))
+            # Parsing Parents
+            parents = soup.find('h3', text='Parents')
+            if parents:
+                ul = parents.findNext('ul')
+                links = ul.findAll('li')
+                father_ = Process.extractQuery(links[0].find(
+                    'a')['href'].strip()) if len(links) > 0 else ''
+                if father_:
+                    father = self.cache[father_] if father_ in self.cache.keys(
+                    ) else self.browse(father_)
+                father_permalink = father.permalink if father else ''
+                mother_ = Process.extractQuery(links[1].find(
+                    'a')['href'].strip()) if len(links) > 1 else ''
+                if mother_:
+                    mother = self.cache[mother_] if mother_ in self.cache.keys(
+                    ) else self.browse(mother_)
+                mother_permalink = mother.permalink if mother else ''
+                if father_permalink or mother_permalink:
+                    family = Family.get(father_permalink, mother_permalink)
+                    family.save()
+                    DB.cur.execute(
+                        'UPDATE people SET family_id = ? WHERE permalink = ?', (family.id, people.permalink))
+            spouses = soup.find('h3', text='Spouses and children') or soup.find(
+                'h3', text='Mariages et enfants')
+            # Parsing Spouses and childrens
+            if spouses:
+                ul = spouses.findNext('ul')
+                links = ul.findAll('b')
+                spouse_ = Process.extractQuery(links[0].find(
+                    'a')['href'].strip()) if len(links) > 0 else ''
+                if spouse_ and spouse_ not in self.cache.keys():
+                    spouse = self.browse(spouse_)
+                    if spouse:
+                        dict1 = Process.extractParams(ul.select('li a.date')[0]['href'].strip()) if len(
+                            ul.select('li a.date')) > 0 else {}
+                        wedding_date = Process.dictToDate(dict1)
+                        wedding_place = ul.select('li script')[0].text.strip().split('"')[
+                            1] if len(ul.select('li script')) > 0 else ''
+                        father_permalink = people.permalink if people.sex == 'H' else spouse.permalink
+                        mother_permalink = spouse.permalink if people.sex == 'F' else people.permalink
+                        family = Family.get(father_permalink, mother_permalink)
+                        family.wedding_date = wedding_date
+                        family.wedding_place = wedding_place
+                        family.save()
+                        print('W %s %s %s' % (wedding_date, wedding_place, family.id))
+
+        else:
+            people = None
         return people
 
     def export(self, filename):
@@ -240,7 +246,7 @@ class Process:
                         mother_permalink, wedding_date or '', wedding_place or ''))
             # Write family
             f.write('\n\nfamily,child\n')
-            for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id) in people:
+            for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode) in people:
                 f.write('%s,%s\n' % (family_id or '', permalink))
 
 
