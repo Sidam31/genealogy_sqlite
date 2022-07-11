@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+from distutils.log import warn
 from genericpath import exists
 from bs4 import BeautifulSoup
 
-import urllib.parse
 import requests
 import sqlite3
 import time
 import json
 import sys
-import re
 import os
 
 
@@ -22,15 +21,47 @@ class DB:
         os.remove(old_database_path)
     if exists(database_path):
         os.rename(database_path, old_database_path)
-        old_con = sqlite3.connect(old_database_path)
-        old_cur = old_con.cursor()
+        #old_con = sqlite3.connect(old_database_path)
+        #old_cur = old_con.cursor()
     con = sqlite3.connect(database_path)
     cur = con.cursor()
 
     def update():
-        DB.cur.execute('CREATE TABLE IF NOT EXISTS people (firstname TEXT NOT NULL DEFAULT "", lastname TEXT NOT NULL DEFAULT "", sex TEXT, birthdate DATE, birthplace TEXT, deathdate DATE, deathplace TEXT, note TEXT, permalink TEXT PRIMARY KEY, family_id INT, timecode TEXT, CONSTRAINT `unique_permalink` UNIQUE(permalink) ON CONFLICT REPLACE)')
-        DB.cur.execute('CREATE TABLE IF NOT EXISTS family (id TEXT PRIMARY KEY, father_permalink TEXT, mother_permalink TEXT, wedding_date DATE, wedding_place TEXT, CONSTRAINT `unique_id` UNIQUE(id) ON CONFLICT REPLACE)')
+        DB.cur.execute('CREATE TABLE IF NOT EXISTS people \
+            (firstname TEXT NOT NULL DEFAULT "", \
+             lastname TEXT NOT NULL DEFAULT "", \
+             sex TEXT, \
+             birthdate DATE, \
+             birthplace TEXT, \
+             birthsource TEXT, \
+             deathdate DATE, \
+             deathplace TEXT, \
+             deathsource TEXT, \
+             note TEXT, \
+             permalink TEXT PRIMARY KEY, \
+             family_id INT, \
+             timecode TEXT, \
+             source TEXT, \
+             CONSTRAINT `unique_permalink` UNIQUE(permalink) ON CONFLICT REPLACE)')
+        DB.cur.execute('CREATE TABLE IF NOT EXISTS family \
+            (id TEXT PRIMARY KEY, \
+             father_permalink TEXT, \
+             mother_permalink TEXT, \
+             wedding_date DATE, \
+             wedding_place TEXT, \
+             source TEXT, \
+             CONSTRAINT `unique_id` UNIQUE(id) ON CONFLICT REPLACE)')
         DB.con.commit()
+
+    def compare(self):
+        self.con.execute("ATTACH ? AS dbold", [self.old_database_path])
+
+        res1 = self.con.execute("""SELECT * FROM people INTERSECT \
+            SELECT * FROM dbold.people
+            """).fetchall()
+        res2 = self.con.execute("""SELECT * FROM people EXCEPT \
+            SELECT * FROM dbold.people
+            """).fetchall()
 
 
 class Family:
@@ -41,6 +72,7 @@ class Family:
         self.father_permalink = father_permalink
         self.mother_permalink = mother_permalink
         self.wedding_date = self.wedding_place = ''
+        self.source = ''
         Family.instances[self.id] = self
 
     def get(father_permalink, mother_permalink):
@@ -48,8 +80,8 @@ class Family:
         return Family.instances[family_id] if family_id in Family.instances.keys() else Family(father_permalink, mother_permalink)
 
     def save(self):
-        DB.cur.execute('INSERT INTO family (id, father_permalink, mother_permalink, wedding_date, wedding_place) VALUES (?, ?, ?, ?, ?)',
-                       (self.id, self.father_permalink, self.mother_permalink, self.wedding_date, self.wedding_place))
+        DB.cur.execute('INSERT INTO family (id, father_permalink, mother_permalink, wedding_date, wedding_place, source) VALUES (?, ?, ?, ?, ?, ?)',
+                       (self.id, self.father_permalink, self.mother_permalink, self.wedding_date, self.wedding_place, self.source))
 
 
 class People:
@@ -64,7 +96,9 @@ class People:
                  deathplace='',
                  family_id='',
                  timecode_id='',
-                 note=''):
+                 note='',
+                 birthsource='',
+                 deathsource=''):
         self.permalink = permalink
         self.firstname = firstname
         self.lastname = lastname
@@ -77,13 +111,15 @@ class People:
         self.family_id = family_id
         self.timecode = timecode_id
         self.note = note
+        self.birthsource = birthsource
+        self.deathsource = deathsource
 
     def __str__(self):
-        return ' '.join(map(str, (self.sex, self.firstname, self.lastname, self.permalink, self.birthdate, self.birthplace, self.deathdate, self.deathplace, self.note)))
+        return ' '.join(map(str, (self.sex, self.firstname, self.lastname, self.permalink, self.birthdate, self.birthplace, self.birthsource, self.deathdate, self.deathplace, self.deathsource, self.note)))
 
     def save(self, DB):
-        DB.cur.execute('INSERT INTO people (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, timecode, note, permalink) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                       (self.firstname, self.lastname, self.sex, self.birthdate, self.birthplace, self.deathdate, self.deathplace, self.timecode, self.note, self.permalink))
+        DB.cur.execute('INSERT INTO people (firstname, lastname, sex, birthdate, birthplace, birthsource, deathdate, deathplace, deathsource, timecode, note, permalink) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                       (self.firstname, self.lastname, self.sex, self.birthdate, self.birthplace, self.birthsource, self.deathdate, self.deathplace, self.deathsource, self.timecode, self.note, self.permalink))
 
 
 class Process:
@@ -133,11 +169,20 @@ class Process:
         return ''
 
     def browse(self, path):
-        response = requests.get(Process.base + path)
+        response = requests.get(Process.base + path, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:20.0) Gecko/20100101 Firefox/20.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
+        'Accept-Encoding': 'UTF-8',
+        'Accept-Language': 'fr-fr,en;q=0.8',
+        'Connection': 'keep-alive'})
         parts = response.text.split('<h3')
 
-        # Parsing Person
         soup = BeautifulSoup(parts[0], "html.parser")
+        if len(soup.select('head meta[name="robots"]'))>0:
+            warn("Access refused adress has been considered to be a robot")
+            return
+        # Parsing Person
+
         permalink_ = soup.select('h1 input')[0]['value'].strip() if len(
             soup.select('h1 input')) > 0 else ''
         parts = permalink_.replace('[', '').replace(']', '').split('/')
@@ -152,10 +197,10 @@ class Process:
             people.lastname = [i for i in soup.select('h1 a[href]') if i['href'].startswith('roglo?lang=fr;m=N')][0].text.strip() if len(
                 soup.select('h1 a')) > 1 else ''
             dict1 = Process.extractParams(soup.select('ul li a.date')[
-                                        0]['href'].strip()) if len(soup.select('ul li a.date')) > 0 else {}
+                0]['href'].strip()) if len(soup.select('ul li a.date')) > 0 else {}
             people.birthdate = Process.dictToDate(dict1)
             dict2 = Process.extractParams(soup.select('ul li a.date')[
-                                        1]['href'].strip()) if len(soup.select('ul li a.date')) > 1 else {}
+                1]['href'].strip()) if len(soup.select('ul li a.date')) > 1 else {}
             people.deathdate = Process.dictToDate(dict2)
             people.birthplace = soup.select('ul li script')[0].text.strip().split('"')[
                 1] if len(soup.select('ul li script')) > 0 else ''
@@ -163,11 +208,17 @@ class Process:
                 1] if len(soup.select('ul li script')) > 1 else ''
 
             soup = BeautifulSoup(response.text, "html.parser")
-            note = [i.string for i in soup.select('body ul li') if not i.has_attr("date") and i.string]
+            note = [i.string for i in soup.select(
+                'body ul li') if not i.has_attr("date") and i.string]
             note.extend([i.text.strip() for i in soup.select('body dl dd')])
             people.note = '\r\n'.join(note)
-
-            _, *temptimecode = soup.select('tr > td > span')[-1].text.strip().rsplit(' ', 5)
+            people.deathsource = '\r\n'.join([i.text for i in soup.select(
+                'body p em br') if "décès" in i.text])
+            people.birthsource = '\r\n'.join([i.text for i in soup.select(
+                'body p em br') if "naissance" in i.text])
+            _, * \
+                temptimecode = soup.select(
+                    'tr > td > span')[-1].text.strip().rsplit(' ', 5)
             people.timecode = ' '.join(temptimecode)
             print(people)
             people.save(DB)
@@ -213,12 +264,15 @@ class Process:
                         wedding_place = ul.select('li script')[0].text.strip().split('"')[
                             1] if len(ul.select('li script')) > 0 else ''
                         father_permalink = people.permalink if people.sex == 'H' else spouse.permalink
-                        mother_permalink = spouse.permalink if people.sex == 'F' else people.permalink
+                        mother_permalink = spouse.permalink if spouse.sex == 'F' else people.permalink
                         family = Family.get(father_permalink, mother_permalink)
                         family.wedding_date = wedding_date
                         family.wedding_place = wedding_place
+                        family.source = '\r\n'.join([i.text for i in soup.select(
+                            'body p em br') if "famille" in i.text or "mariage" in i.text])
                         family.save()
-                        print('W %s %s %s' % (wedding_date, wedding_place, family.id))
+                        print('W %s %s %s' %
+                              (wedding_date, wedding_place, family.id))
 
         else:
             people = None
@@ -228,15 +282,15 @@ class Process:
         with open(filename, 'w', encoding='utf-8') as f:
             # Write people
             DB.cur.execute(
-                'SELECT firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode FROM people')
+                'SELECT firstname, lastname, sex, birthdate, birthplace, birthsource, deathdate, deathplace, deathsource, permalink, family_id, timecode, note FROM people')
             f.write(
-                'person,grampsid,firstname,lastname,gender,note,birthdate,birthplace,deathdate,deathplace, timecode\n')
+                'person,grampsid,firstname,lastname,gender,note,birthdate,birthplace,birthsource,deathdate,deathplace,deathsource,attributetype,attributevalue\n')
             people = DB.cur.fetchall()
-            for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode) in people:
+            for (firstname, lastname, sex, birthdate, birthplace, birthsource, deathdate, deathplace, deathsource, permalink, family_id, timecode, note) in people:
                 sex = 'male' if sex == 'M' else 'female' if sex == 'F' else ''
-                source = Process.base + permalink
-                f.write('%s,,"%s","%s",%s,%s,%s,"%s",%s,"%s", "%s"\n' % (
-                    permalink, firstname, lastname, sex, source, birthdate, birthplace, deathdate, deathplace, ' '.join(timecode)))
+                source_adress = Process.base + permalink
+                f.write('{0},,"{1}","{2}",{3},{4},{5},"{6}",{7},{8},"{9}",{10}, Roglo, {11}\n'.format(
+                    permalink, firstname, lastname, sex, note, birthdate, birthplace, birthsource, deathdate, deathplace, deathsource, source_adress))
             # Write marriage
             f.write('\n\nmarriage,husband,wife,date,place,source\n')
             DB.cur.execute(
@@ -246,7 +300,7 @@ class Process:
                         mother_permalink, wedding_date or '', wedding_place or ''))
             # Write family
             f.write('\n\nfamily,child\n')
-            for (firstname, lastname, sex, birthdate, birthplace, deathdate, deathplace, permalink, family_id, timecode) in people:
+            for (firstname, lastname, sex, birthdate, birthplace, birthsource, deathdate, deathplace, deathsource, permalink, family_id, timecode, note) in people:
                 f.write('%s,%s\n' % (family_id or '', permalink))
 
 
