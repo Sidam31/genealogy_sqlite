@@ -170,13 +170,22 @@ class Process:
 
     def browse(self, path):
         time.sleep(2)
-        response = requests.get(Process.base + path)
+        response = requests.get(Process.base + path,
+                                headers={'User-Agent': 'Mozilla/5.0 \
+                                    (Windows NT 6.1; WOW64; rv:20.0) \
+                                    Gecko/20100101 Firefox/20.0',
+                                         'Accept': 'text/html',
+                                         'Accept-Charset': 'utf-8',
+                                         'Accept-Encoding': 'UTF-8',
+                                         'Accept-Language': 'fr-FR,fr;q=0.8'
+                                         })
         parts = response.text.split('<h3')
 
         soup = BeautifulSoup(parts[0], "html.parser")
-        if len(soup.select('head meta[name="robots"]'))>0:
+        if soup.select('head meta[name="robots"]')[0].text != '':
+            print(soup.select('head meta[name="robots"]')[0].text)
             warn("Access refused adress has been considered to be a robot")
-            #return
+            return
         # Parsing Person
 
         permalink_ = soup.select('h1 input')[0]['value'].strip() if len(
