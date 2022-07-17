@@ -1,3 +1,6 @@
 [submodule "getmyancestors"]
 	path = getmyancestors
 	url = https://github.com/Linekio/getmyancestors
+[submodule "GeneanetForGramps"]
+	path = GeneanetForGramps
+	url = https://github.com/romjerome/GeneanetForGramps
