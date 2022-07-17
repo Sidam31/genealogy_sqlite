@@ -1,1 +1,4 @@
 *.sqlite3
+*.json
+*.db
+*.csv

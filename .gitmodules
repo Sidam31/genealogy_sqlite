@@ -1,0 +1,3 @@
+[submodule "getmyancestors"]
+	path = getmyancestors
+	url = https://github.com/Linekio/getmyancestors
